@@ -1,0 +1,58 @@
+#version 450
+// Where each 16x16 block of this frame came from in the previous one: an exhaustive search on the quarter-size brightness
+// (+-12 texels, so +-48 pixels), then a +-3 pixel refinement at full size. The vector v is the block's movement: the block at
+// x in this frame was at x - v in the previous one. z holds how well it matched (lower is better).
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D lumaPrev;
+layout(binding = 1) uniform sampler2D lumaCur;
+layout(binding = 2) uniform sampler2D prevFrame;
+layout(binding = 3) uniform sampler2D curFrame;
+layout(binding = 4, rgba16f) uniform writeonly image2D flow;
+
+const int R = 12;
+
+float lum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+void main() {
+    ivec2 b = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(b, imageSize(flow)))) return;
+    ivec2 qs = textureSize(lumaCur, 0);
+    ivec2 q0 = b * 4;
+    float block[16];
+    for (int y = 0; y < 4; y++)
+        for (int x = 0; x < 4; x++)
+            block[y * 4 + x] = texelFetch(lumaCur, clamp(q0 + ivec2(x, y), ivec2(0), qs - 1), 0).r;
+    float best = 1e9;
+    ivec2 bv = ivec2(0);
+    for (int dy = -R; dy <= R; dy++) {
+        for (int dx = -R; dx <= R; dx++) {
+            float sad = 0.0;
+            for (int y = 0; y < 4; y++)
+                for (int x = 0; x < 4; x++)
+                    sad += abs(block[y * 4 + x] - texelFetch(lumaPrev, clamp(q0 + ivec2(x - dx, y - dy), ivec2(0), qs - 1), 0).r);
+            // a small preference for less movement, so flat areas do not pick a random vector
+            sad += 0.004 * float(abs(dx) + abs(dy));
+            if (sad < best) { best = sad; bv = ivec2(dx, dy); }
+        }
+    }
+    ivec2 fs = textureSize(curFrame, 0);
+    ivec2 f0 = b * 16;
+    ivec2 base = bv * 4;
+    float best2 = 1e9;
+    ivec2 v = base;
+    for (int dy = -3; dy <= 3; dy++) {
+        for (int dx = -3; dx <= 3; dx++) {
+            ivec2 cand = base + ivec2(dx, dy);
+            float sad = 0.0;
+            for (int y = 0; y < 16; y += 2)
+                for (int x = 0; x < 16; x += 2) {
+                    ivec2 pc = clamp(f0 + ivec2(x, y), ivec2(0), fs - 1);
+                    sad += abs(lum(texelFetch(curFrame, pc, 0).rgb) - lum(texelFetch(prevFrame, clamp(pc - cand, ivec2(0), fs - 1), 0).rgb));
+                }
+            // the same preference for less movement as above (in quarter-size units), so a flat area stays still
+            sad += 0.004 * 16.0 * float(abs(cand.x) + abs(cand.y)) / 4.0;
+            if (sad < best2) { best2 = sad; v = cand; }
+        }
+    }
+    imageStore(flow, b, vec4(vec2(v), best2 / 64.0, 0.0));
+}

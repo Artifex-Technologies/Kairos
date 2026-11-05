@@ -3,15 +3,17 @@
 //! The layer sits between a game and the driver. It sees every frame the game presents (vkQueuePresentKHR) and, for each one,
 //! presents `multiplier - 1` frames of its own first, so the screen shows more frames than the game draws.
 //!
-//! Milestone 2 (this file): the frames in between are copies of the game's frame, which proves the plumbing and the pacing
-//! (FIFO presentation shows one image per refresh, so the game is held to refresh / multiplier and the screen gets the full
-//! refresh). Milestone 3 replaces the copy with motion-estimated frames between the previous game frame and this one.
+//! The frames in between are made from the previous game frame and this one along the estimated motion (gen.rs, shaders/).
+//! FIFO presentation shows one image per refresh, so the game is held to refresh / multiplier and the screen gets the full
+//! refresh. If the generator cannot be made (memory, formats), the added frames are copies of the game's frame.
 //!
 //! Off unless asked for: the manifest loads it only with ENABLE_LABYRINTH_FRAMEGEN=1. Settings (environment, for now):
-//! LABYRINTH_FRAMEGEN_MULTIPLIER (2..4, default 2), LABYRINTH_FRAMEGEN_LOG=1 (rates every two seconds, on stderr).
+//! LABYRINTH_FRAMEGEN_MULTIPLIER (2..4, default 2), LABYRINTH_FRAMEGEN_LOG=1 (rates every two seconds, on stderr),
+//! LABYRINTH_FRAMEGEN_MODE=copy (copies instead of generated frames, to compare).
 
 #![allow(clippy::missing_safety_doc)]
 
+mod gen;
 mod loader;
 
 use ash::vk;
@@ -37,6 +39,22 @@ pub fn parse_multiplier(v: Option<&str>) -> u32 {
     v.and_then(|s| s.trim().parse::<u32>().ok()).filter(|m| (2..=MAX_MULTIPLIER).contains(m)).unwrap_or(2)
 }
 
+fn copy_mode() -> bool {
+    static C: OnceLock<bool> = OnceLock::new();
+    *C.get_or_init(|| std::env::var("LABYRINTH_FRAMEGEN_MODE").is_ok_and(|v| v == "copy"))
+}
+
+/// LABYRINTH_FRAMEGEN_DEBUG: `flow` shows the estimated motion as colour in the added frames, `mark` puts a magenta square in
+/// their top left corner (for telling them apart in screenshots). 0 = off, 1 = flow, 2 = mark.
+fn debug_mode() -> i32 {
+    static D: OnceLock<i32> = OnceLock::new();
+    *D.get_or_init(|| match std::env::var("LABYRINTH_FRAMEGEN_DEBUG").as_deref() {
+        Ok("flow") => 1,
+        Ok("mark") => 2,
+        _ => 0,
+    })
+}
+
 fn logging() -> bool {
     static L: OnceLock<bool> = OnceLock::new();
     *L.get_or_init(|| std::env::var("LABYRINTH_FRAMEGEN_LOG").is_ok_and(|v| v == "1"))
@@ -53,7 +71,7 @@ unsafe fn key<H: Handle>(h: H) -> usize {
 
 struct InstanceData {
     next_gipa: vk::PFN_vkGetInstanceProcAddr,
-    destroy: vk::PFN_vkDestroyInstance,
+    inst: ash::Instance,
 }
 
 struct DeviceData {
@@ -62,6 +80,7 @@ struct DeviceData {
     dev: ash::Device,
     swap: ash::khr::swapchain::DeviceFn,
     set_loader_data: Option<SetDeviceLoaderData>,
+    mem: vk::PhysicalDeviceMemoryProperties,
     /// queue -> its family (from vkGetDeviceQueue / vkGetDeviceQueue2)
     families: HashMap<u64, u32>,
 }
@@ -85,6 +104,8 @@ struct SwapchainData {
     /// made on the first present (the queue family is known then)
     pool: vk::CommandPool,
     slots: Vec<Slot>,
+    gen: Option<gen::Gen>,
+    gen_failed: bool,
     next: usize,
     /// rate counting
     since: Instant,
@@ -176,9 +197,9 @@ unsafe extern "system" fn create_instance(info: *const vk::InstanceCreateInfo<'_
     if r != vk::Result::SUCCESS {
         return r;
     }
-    let destroy = next_gipa(*out, c"vkDestroyInstance".as_ptr());
-    let Some(destroy) = destroy else { return vk::Result::ERROR_INITIALIZATION_FAILED };
-    state().instances.insert(key(*out), InstanceData { next_gipa, destroy: std::mem::transmute(destroy) });
+    let instance = *out;
+    let inst = ash::Instance::load_with(|name| next_gipa(instance, name.as_ptr()).map_or(std::ptr::null(), |f| f as *const c_void), instance);
+    state().instances.insert(key(instance), InstanceData { next_gipa, inst });
     log!("on (multiplier {})", multiplier());
     r
 }
@@ -186,7 +207,7 @@ unsafe extern "system" fn create_instance(info: *const vk::InstanceCreateInfo<'_
 unsafe extern "system" fn destroy_instance(instance: vk::Instance, alloc: *const vk::AllocationCallbacks<'_>) {
     let data = state().instances.remove(&key(instance));
     if let Some(d) = data {
-        (d.destroy)(instance, alloc);
+        (d.inst.fp_v1_0().destroy_instance)(instance, alloc);
     }
 }
 
@@ -208,7 +229,10 @@ unsafe extern "system" fn create_device(pd: vk::PhysicalDevice, info: *const vk:
     let load = |name: &CStr| next_gdpa(device, name.as_ptr()).map_or(std::ptr::null(), |f| f as *const c_void);
     let dev = ash::Device::load_with(load, device);
     let swap = ash::khr::swapchain::DeviceFn::load(load);
-    state().devices.insert(key(device), DeviceData { handle: device, next_gdpa, dev, swap, set_loader_data, families: HashMap::new() });
+    let mut s = state();
+    // a physical device's loader table is its instance's
+    let mem = s.instances.get(&key(pd)).map(|i| i.inst.get_physical_device_memory_properties(pd)).unwrap_or_default();
+    s.devices.insert(key(device), DeviceData { handle: device, next_gdpa, dev, swap, set_loader_data, mem, families: HashMap::new() });
     r
 }
 
@@ -286,6 +310,8 @@ unsafe extern "system" fn create_swapchain(device: vk::Device, info: *const vk::
         layers: mine.image_array_layers.max(1),
         pool: vk::CommandPool::null(),
         slots: vec![],
+        gen: None,
+        gen_failed: false,
         next: 0,
         since: Instant::now(),
         game_frames: 0,
@@ -303,6 +329,9 @@ unsafe fn free_swapchain_objects(d: &DeviceData, sc: &SwapchainData) {
     }
     if sc.pool != vk::CommandPool::null() {
         d.dev.destroy_command_pool(sc.pool, None);
+    }
+    if let Some(g) = &sc.gen {
+        g.destroy(&d.dev);
     }
 }
 
@@ -324,6 +353,18 @@ unsafe extern "system" fn destroy_swapchain(device: vk::Device, swapchain: vk::S
 unsafe fn prepare(d: &DeviceData, sc: &mut SwapchainData, family: u32, m: u32) -> Result<(), vk::Result> {
     if sc.pool != vk::CommandPool::null() {
         return Ok(());
+    }
+    if !copy_mode() && sc.layers == 1 {
+        match gen::Gen::new(&d.dev, &d.mem, sc.extent) {
+            Ok(g) => {
+                log!("generating frames at {}x{}", sc.extent.width, sc.extent.height);
+                sc.gen = Some(g);
+            }
+            Err(e) => {
+                log!("the frame generator could not be made ({e:?}); adding copies instead");
+                sc.gen_failed = true;
+            }
+        }
     }
     sc.pool = d.dev.create_command_pool(&vk::CommandPoolCreateInfo::default().queue_family_index(family).flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER), None)?;
     let cmds = d.dev.allocate_command_buffers(&vk::CommandBufferAllocateInfo::default().command_pool(sc.pool).level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(SLOTS as u32))?;
@@ -347,6 +388,13 @@ unsafe fn prepare(d: &DeviceData, sc: &mut SwapchainData, family: u32, m: u32) -
         sc.slots.push(Slot { fence, cmd, acquired, ready, used: false });
     }
     Ok(())
+}
+
+/// The whole image, same size on both sides.
+fn blit_region(w: i32, h: i32) -> vk::ImageBlit {
+    let sub = vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: 1 };
+    let corners = [vk::Offset3D { x: 0, y: 0, z: 0 }, vk::Offset3D { x: w, y: h, z: 1 }];
+    vk::ImageBlit { src_subresource: sub, src_offsets: corners, dst_subresource: sub, dst_offsets: corners }
 }
 
 fn color_range(layers: u32) -> vk::ImageSubresourceRange {
@@ -436,21 +484,60 @@ unsafe fn add_frames(d: &DeviceData, sc: &mut SwapchainData, queue: vk::Queue, f
     d.dev.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())?;
     d.dev.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
     let layers = sc.layers;
-    let mut before = vec![barrier(game_image, vk::ImageLayout::PRESENT_SRC_KHR, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::MEMORY_WRITE, vk::AccessFlags::TRANSFER_READ, layers)];
-    for &j in &targets {
-        before.push(barrier(sc.images[j as usize], vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE, layers));
+    let (w, h) = (sc.extent.width as i32, sc.extent.height as i32);
+    match sc.gen.as_mut() {
+        Some(g) => {
+            // the game's frame into the generator's own image (a blit: sRGB becomes linear half floats)
+            let frame = g.frames[g.cur].image;
+            let before = [
+                barrier(game_image, vk::ImageLayout::PRESENT_SRC_KHR, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::MEMORY_WRITE, vk::AccessFlags::TRANSFER_READ, layers),
+                barrier(frame, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE, 1),
+            ];
+            d.dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::ALL_COMMANDS, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[], &[], &before);
+            d.dev.cmd_blit_image(cmd, game_image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, frame, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[blit_region(w, h)], vk::Filter::NEAREST);
+            let ready = [barrier(frame, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::SHADER_READ, 1)];
+            d.dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &[], &ready);
+            g.record_analysis(&d.dev, cmd);
+            for (k, &j) in targets.iter().enumerate() {
+                // the first game frame has nothing before it: its added frames are copies
+                let (src, src_layout) = if g.have_prev {
+                    g.record_frame(&d.dev, cmd, (k + 1) as f32 / m as f32, k == 0);
+                    (g.out.image, vk::ImageLayout::GENERAL)
+                } else {
+                    (game_image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                };
+                let target = sc.images[j as usize];
+                let pre = [barrier(target, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE, layers)];
+                d.dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[], &[], &pre);
+                d.dev.cmd_blit_image(cmd, src, src_layout, target, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[blit_region(w, h)], vk::Filter::NEAREST);
+                let post = [barrier(target, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::empty(), layers)];
+                d.dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::BOTTOM_OF_PIPE, vk::DependencyFlags::empty(), &[], &[], &post);
+            }
+            let back = [barrier(game_image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::empty(), layers)];
+            d.dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::BOTTOM_OF_PIPE, vk::DependencyFlags::empty(), &[], &[], &back);
+            // this frame is the previous one for the next
+            g.cur = 1 - g.cur;
+            g.have_prev = true;
+        }
+        None => {
+            let layers = sc.layers;
+            let mut before = vec![barrier(game_image, vk::ImageLayout::PRESENT_SRC_KHR, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::MEMORY_WRITE, vk::AccessFlags::TRANSFER_READ, layers)];
+            for &j in &targets {
+                before.push(barrier(sc.images[j as usize], vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE, layers));
+            }
+            d.dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::ALL_COMMANDS, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[], &[], &before);
+            let sub = vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: layers };
+            let region = vk::ImageCopy { src_subresource: sub, src_offset: vk::Offset3D::default(), dst_subresource: sub, dst_offset: vk::Offset3D::default(), extent: vk::Extent3D { width: sc.extent.width, height: sc.extent.height, depth: 1 } };
+            for &j in &targets {
+                d.dev.cmd_copy_image(cmd, game_image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, sc.images[j as usize], vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
+            }
+            let mut after = vec![barrier(game_image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::empty(), layers)];
+            for &j in &targets {
+                after.push(barrier(sc.images[j as usize], vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::empty(), layers));
+            }
+            d.dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::BOTTOM_OF_PIPE, vk::DependencyFlags::empty(), &[], &[], &after);
+        }
     }
-    d.dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::ALL_COMMANDS, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[], &[], &before);
-    let sub = vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: layers };
-    let region = vk::ImageCopy { src_subresource: sub, src_offset: vk::Offset3D::default(), dst_subresource: sub, dst_offset: vk::Offset3D::default(), extent: vk::Extent3D { width: sc.extent.width, height: sc.extent.height, depth: 1 } };
-    for &j in &targets {
-        d.dev.cmd_copy_image(cmd, game_image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, sc.images[j as usize], vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
-    }
-    let mut after = vec![barrier(game_image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::empty(), layers)];
-    for &j in &targets {
-        after.push(barrier(sc.images[j as usize], vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::empty(), layers));
-    }
-    d.dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::BOTTOM_OF_PIPE, vk::DependencyFlags::empty(), &[], &[], &after);
     d.dev.end_command_buffer(cmd)?;
     let mut wait_sems: Vec<vk::Semaphore> = waits.to_vec();
     let mut wait_stages = vec![vk::PipelineStageFlags::ALL_COMMANDS; waits.len()];

@@ -1,0 +1,16 @@
+#version 450
+// The frame's brightness at a quarter of its size: each texel the average of a 4x4 block (four bilinear taps).
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D frame;
+layout(binding = 1, r32f) uniform writeonly image2D luma;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(luma);
+    if (any(greaterThanEqual(p, size))) return;
+    vec2 texel = 1.0 / vec2(textureSize(frame, 0));
+    vec2 c = (vec2(p) * 4.0 + 2.0) * texel;
+    vec3 s = texture(frame, c + vec2(-1.0, -1.0) * texel).rgb + texture(frame, c + vec2(1.0, -1.0) * texel).rgb
+           + texture(frame, c + vec2(-1.0, 1.0) * texel).rgb + texture(frame, c + vec2(1.0, 1.0) * texel).rgb;
+    imageStore(luma, p, vec4(dot(s * 0.25, vec3(0.299, 0.587, 0.114))));
+}

@@ -24,15 +24,19 @@ native Vulkan games and every Proton game (DXVK and VKD3D-Proton draw through Vu
 2. **Present:** for each game frame, the layer acquires `multiplier - 1` more images, draws the frames in between into
    them, presents them, then presents the game's frame. The game is held to refresh / multiplier; the screen gets the full
    refresh. One game frame of latency is inherent: the frames in between need the next game frame.
-3. **Frames in between** (milestone 3): the game frame is copied into the layer's own images; motion is estimated between
-   the previous game frame and this one at reduced resolution (hierarchical block matching on luminance, then refinement),
-   and each frame in between samples both frames along the motion, weighted by its time, falling back to the nearer frame
-   where the two disagree (things appearing or disappearing).
+3. **Frames in between** (milestone 3): the game frame is blitted into the layer's own half-float images (sRGB becomes
+   linear); four compute passes (shaders/): `luma` (brightness at a quarter size), `motion` (a vector per 16x16 block: an
+   exhaustive +-48 px search at quarter size, then +-3 px at full size, with a small preference for less movement),
+   `smooth` (3x3 vector median, removing lone wrong vectors), and per added frame `interp` (both frames sampled along the
+   vector at time t, blended; where they disagree, the nearer frame alone). The result is blitted into the acquired
+   swapchain image.
 4. **Second card** (milestone 5): the game draws on card A; the layer copies each frame to card B (external memory, or host
    memory as the fallback) and generates and presents there, with the monitor on card B.
 
 Settings (environment for now, Settings > Games later): `LABYRINTH_FRAMEGEN_MULTIPLIER` (2 to 4), `LABYRINTH_FRAMEGEN_LOG=1`
-(rates every two seconds on stderr).
+(rates every two seconds on stderr), `LABYRINTH_FRAMEGEN_MODE=copy` (copies instead, to compare),
+`LABYRINTH_FRAMEGEN_DEBUG=flow` (the added frames show the motion as colour: grey still) or `=mark` (a magenta square in
+their top left corner, to pick them out in screenshots).
 
 ## Milestones
 
@@ -40,8 +44,8 @@ Settings (environment for now, Settings > Games later): `LABYRINTH_FRAMEGEN_MULT
 |---|---|---|
 | 1 | The layer loads, sees instances, devices, swapchains and presents | done 2026-11-05 |
 | 2 | Extra presents per game frame, as copies: plumbing and pacing | done 2026-11-05: vkcube 90 game fps / 180 shown at x2, 60 / 180 at x3 (180 Hz) |
-| 3 | Real frames in between: motion estimation and interpolation (compute shaders) | next |
-| 4 | Measured: latency (game frame to screen), artifacts on test scenes, cost per frame at 1080p and 1440p on the RTX 2080 Ti | |
+| 3 | Real frames in between: motion estimation and interpolation (compute shaders) | first version 2026-11-05: added frames are real in-between frames (vkcube: a clean cube, slightly soft edges), no validation errors; holds 90/180 at 1080p, but the card is about 87 % busy: far too heavy |
+| 4 | Measured and made light: GPU timestamps per pass; a multi-level (pyramid) motion search instead of the exhaustive one, shared-memory tiles; latency (game frame to screen) and artifacts on test scenes; cost at 1080p and 1440p on the RTX 2080 Ti | next |
 | 5 | Second card | needs a second card to test |
 | 6 | Settings > Games: per-game switch and multiplier; a package in Labyrinth's repository; a 32-bit build for old Proton games | |
 
@@ -51,3 +55,5 @@ Settings (environment for now, Settings > Games later): `LABYRINTH_FRAMEGEN_MULT
 - In the nested test desktop (Yggdrasil `scripts/screenshot-desktop.sh`):
   `VK_ADD_IMPLICIT_LAYER_PATH=target/release ENABLE_LABYRINTH_FRAMEGEN=1 LABYRINTH_FRAMEGEN_LOG=1 vkcube`
   (`target/release/labyrinth_framegen.json` is `data/labyrinth_framegen.json` with `./` before the library name).
+- With `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` (vulkan-validation-layers): zero messages expected.
+- Shaders are compiled for Vulkan 1.0 (SPIR-V 1.0), so games that ask for 1.0 (vkcube does) accept them.

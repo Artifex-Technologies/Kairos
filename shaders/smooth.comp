@@ -1,0 +1,27 @@
+#version 450
+// The vector median of each block's 3x3 neighbourhood: of the nine vectors, the one closest to all the others. Removes the
+// lone wrong vectors block matching leaves on flat or repeating areas, and keeps edges between moving things sharp.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D flowIn;
+layout(binding = 1, rgba16f) uniform writeonly image2D flowOut;
+
+void main() {
+    ivec2 b = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(flowOut);
+    if (any(greaterThanEqual(b, size))) return;
+    vec2 v[9];
+    float err[9];
+    for (int i = 0; i < 9; i++) {
+        vec4 f = texelFetch(flowIn, clamp(b + ivec2(i % 3 - 1, i / 3 - 1), ivec2(0), size - 1), 0);
+        v[i] = f.xy;
+        err[i] = f.z;
+    }
+    int best = 4;
+    float bestSum = 1e9;
+    for (int i = 0; i < 9; i++) {
+        float sum = 0.0;
+        for (int j = 0; j < 9; j++) sum += distance(v[i], v[j]);
+        if (sum < bestSum) { bestSum = sum; best = i; }
+    }
+    imageStore(flowOut, b, vec4(v[best], err[best], 0.0));
+}

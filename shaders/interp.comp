@@ -1,0 +1,28 @@
+#version 450
+// A frame at time t between the previous frame (t = 0) and this one (t = 1): each pixel follows the block motion back into
+// the previous frame and forward into this one and blends the two by t. Where they disagree (something appearing or
+// disappearing, or a wrong vector) the nearer frame alone is used.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D prevFrame;
+layout(binding = 1) uniform sampler2D curFrame;
+layout(binding = 2) uniform sampler2D flow;
+layout(binding = 3, rgba16f) uniform writeonly image2D outFrame;
+// mode 1 (LABYRINTH_FRAMEGEN_DEBUG=flow): the motion as colour instead (grey = still; red/green = sideways/up-down);
+// mode 2 (LABYRINTH_FRAMEGEN_DEBUG=mark): a magenta square in the top left corner marks the frame as made here
+layout(push_constant) uniform Push { float t; int mode; } pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outFrame);
+    if (any(greaterThanEqual(p, size))) return;
+    vec2 px = vec2(p) + 0.5;
+    vec2 inv = 1.0 / vec2(size);
+    vec2 v = texture(flow, px / (vec2(textureSize(flow, 0)) * 16.0)).rg;
+    vec3 a = texture(prevFrame, (px - pc.t * v) * inv).rgb;
+    vec3 c = texture(curFrame, (px + (1.0 - pc.t) * v) * inv).rgb;
+    vec3 col = mix(a, c, pc.t);
+    if (length(a - c) > 0.25) col = pc.t < 0.5 ? a : c;
+    if (pc.mode == 1) col = vec3(clamp(0.5 + v / 24.0, 0.0, 1.0), 0.5);
+    if (pc.mode == 2 && p.x < 12 && p.y < 12) col = vec3(1.0, 0.0, 1.0);
+    imageStore(outFrame, p, vec4(col, 1.0));
+}
