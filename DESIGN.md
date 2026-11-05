@@ -41,7 +41,7 @@ their top left corner), `LABYRINTH_FRAMEGEN_LOG_FILE=path` (the log appended to 
 anyone sees).
 
 In a Steam game's launch options (the layer from a build folder, until it is packaged):
-`VK_ADD_IMPLICIT_LAYER_PATH=/path/to/labyrinth-framegen/target/release ENABLE_LABYRINTH_FRAMEGEN=1 %command%`
+`VK_ADD_IMPLICIT_LAYER_PATH=/path/to/labyrinth-framegen/target/layers ENABLE_LABYRINTH_FRAMEGEN=1 %command%`
 It reaches Proton games through Steam's container (pressure-vessel) as it is.
 
 ## Milestones
@@ -53,13 +53,14 @@ It reaches Proton games through Steam's container (pressure-vessel) as it is.
 | 3 | Real frames in between: motion estimation and interpolation (compute shaders) | first version 2026-11-05: added frames are real in-between frames (vkcube: a clean cube, slightly soft edges), no validation errors; holds 90/180 at 1080p, but the card is about 87 % busy: far too heavy |
 | 4 | Measured and made light | in progress. GPU timestamps per step (`LABYRINTH_FRAMEGEN_LOG=1`). At 1080p the motion search took 8.0 ms of 8.3: one thread per block left the card idle. Now one work group of 64 threads per block (search area in shared memory, a reduction): **0.31 ms**; the whole generator **0.64 ms per game frame** (copy in 0.07, brightness 0.06, motion 0.31, smoothing 0.01, frames out 0.19), same motion quality. **First real game (2026-11-05): Stray** (Unreal Engine 4, DX11 through Proton Experimental, inside Steam's container): the layer loads into the game process, generates at 1080p for **about 0.6 ms** a game frame, 60 game fps (its menu cap) to 120 shown. Left: whether the added frames look right on a real screen (screenshots cannot tell: grim captures whichever image the compositor holds, 0 of 12 or 4 of 4 depending on timing, so this needs eyes), 1440p and 4K, latency (+1 game frame is inherent) |
 | 5 | Second card | needs a second card to test |
-| 6 | Settings > Games: per-game switch and multiplier; a package in Labyrinth's repository; a 32-bit build for old Proton games | |
+| 6 | Settings > Games: per-game switch and multiplier; a package in Labyrinth's repository; a 32-bit build for old Proton games | 32-bit build done 2026-11-05 (`lib32-rust-libs`; `scripts/dev-layers.sh` builds both and writes both manifests): **Dead Space 2** (32-bit DirectX 9 through DXVK) generates at 3440x1440 for about 1.1 ms a game frame. Next: the Settings switch and the package |
 
 ## Testing
 
 - `cargo test` (no GPU).
-- In the nested test desktop (Yggdrasil `scripts/screenshot-desktop.sh`):
-  `VK_ADD_IMPLICIT_LAYER_PATH=target/release ENABLE_LABYRINTH_FRAMEGEN=1 LABYRINTH_FRAMEGEN_LOG=1 vkcube`
-  (`target/release/labyrinth_framegen.json` is `data/labyrinth_framegen.json` with `./` before the library name).
+- `scripts/dev-layers.sh` builds the 64-bit and 32-bit layers and writes both manifests to `target/layers`; then, in the
+  nested test desktop (Yggdrasil `scripts/screenshot-desktop.sh`):
+  `VK_ADD_IMPLICIT_LAYER_PATH=$PWD/target/layers ENABLE_LABYRINTH_FRAMEGEN=1 LABYRINTH_FRAMEGEN_LOG=1 vkcube`.
+  The installed manifests (`data/*.json`) point at /usr/lib and /usr/lib32.
 - With `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` (vulkan-validation-layers): zero messages expected.
 - Shaders are compiled for Vulkan 1.0 (SPIR-V 1.0), so games that ask for 1.0 (vkcube does) accept them.
