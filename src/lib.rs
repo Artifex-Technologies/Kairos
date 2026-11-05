@@ -61,7 +61,24 @@ fn logging() -> bool {
 }
 
 macro_rules! log {
-    ($($t:tt)*) => { if logging() { eprintln!("[labyrinth-framegen] {}", format!($($t)*)); } };
+    ($($t:tt)*) => { if logging() { log_line(&format!($($t)*)); } };
+}
+
+/// A log line on stderr, or appended to LABYRINTH_FRAMEGEN_LOG_FILE (a game under Proton has no stderr anyone sees).
+fn log_line(msg: &str) {
+    static FILE: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
+    let file = FILE.get_or_init(|| {
+        let path = std::env::var_os("LABYRINTH_FRAMEGEN_LOG_FILE")?;
+        std::fs::OpenOptions::new().create(true).append(true).open(path).ok().map(Mutex::new)
+    });
+    let line = format!("[labyrinth-framegen {}] {msg}\n", std::process::id());
+    match file {
+        Some(f) => {
+            use std::io::Write;
+            let _ = f.lock().map(|mut f| f.write_all(line.as_bytes()));
+        }
+        None => eprint!("{line}"),
+    }
 }
 
 /// What a dispatchable handle's loader table is: the key the loader itself uses to tell devices (and their queues) apart.
@@ -212,7 +229,7 @@ unsafe extern "system" fn create_instance(info: *const vk::InstanceCreateInfo<'_
     let instance = *out;
     let inst = ash::Instance::load_with(|name| next_gipa(instance, name.as_ptr()).map_or(std::ptr::null(), |f| f as *const c_void), instance);
     state().instances.insert(key(instance), InstanceData { next_gipa, inst });
-    log!("on (multiplier {})", multiplier());
+    log!("on (multiplier {}) in {}", multiplier(), std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default());
     r
 }
 
@@ -444,6 +461,9 @@ unsafe extern "system" fn queue_present(queue: vk::Queue, info: *const vk::Prese
     let p = &*info;
     // one swapchain at a time; anything else (or a swapchain the layer left alone) goes straight through
     if p.swapchain_count != 1 || !s.swapchains.contains_key(&(*p.p_swapchains).as_raw()) {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        let count = p.swapchain_count;
+        ONCE.call_once(|| log!("a present the layer leaves alone ({count} swapchains, or one it did not see made)"));
         drop(s);
         return present(queue, info);
     }
