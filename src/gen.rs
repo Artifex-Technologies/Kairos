@@ -219,26 +219,39 @@ impl Gen {
 
     /// Records: the current frame's brightness, and (when there is a previous frame) the motion between the two. The current
     /// frame must already be in `frames[cur]` in GENERAL.
-    pub unsafe fn record_analysis(&self, dev: &ash::Device, cmd: vk::CommandBuffer) {
+    /// `queries` (or null): timestamps 2, 3 and 4 are written after the brightness, motion and smoothing passes.
+    pub unsafe fn record_analysis(&self, dev: &ash::Device, cmd: vk::CommandBuffer, queries: vk::QueryPool) {
+        let stamp = |i: u32| {
+            if queries != vk::QueryPool::null() {
+                dev.cmd_write_timestamp(cmd, vk::PipelineStageFlags::BOTTOM_OF_PIPE, queries, i);
+            }
+        };
         let k = self.cur;
         let q = quarter(self.extent);
         let pre = [Self::compute_barrier(self.luma[k].image, vk::ImageLayout::UNDEFINED, vk::AccessFlags::empty(), vk::AccessFlags::SHADER_WRITE)];
         dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &[], &pre);
         self.dispatch(dev, cmd, 0, groups(q));
+        stamp(2);
         let mut b = vec![Self::compute_barrier(self.luma[k].image, vk::ImageLayout::GENERAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::SHADER_READ)];
         if !self.have_prev {
             dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &[], &b);
+            stamp(3);
+            stamp(4);
             return;
         }
         b.push(Self::compute_barrier(self.flow.image, vk::ImageLayout::UNDEFINED, vk::AccessFlags::empty(), vk::AccessFlags::SHADER_WRITE));
         dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &[], &b);
-        self.dispatch(dev, cmd, 1, groups(flow_size(self.extent)));
+        // one work group of 64 threads per block
+        let f = flow_size(self.extent);
+        self.dispatch(dev, cmd, 1, (f.width, f.height));
+        stamp(3);
         let mid = [
             Self::compute_barrier(self.flow.image, vk::ImageLayout::GENERAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::SHADER_READ),
             Self::compute_barrier(self.flow2.image, vk::ImageLayout::UNDEFINED, vk::AccessFlags::empty(), vk::AccessFlags::SHADER_WRITE),
         ];
         dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &[], &mid);
         self.dispatch(dev, cmd, 3, groups(flow_size(self.extent)));
+        stamp(4);
         let after = [Self::compute_barrier(self.flow2.image, vk::ImageLayout::GENERAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::SHADER_READ)];
         dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &[], &after);
     }

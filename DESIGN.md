@@ -26,7 +26,8 @@ native Vulkan games and every Proton game (DXVK and VKD3D-Proton draw through Vu
    refresh. One game frame of latency is inherent: the frames in between need the next game frame.
 3. **Frames in between** (milestone 3): the game frame is blitted into the layer's own half-float images (sRGB becomes
    linear); four compute passes (shaders/): `luma` (brightness at a quarter size), `motion` (a vector per 16x16 block: an
-   exhaustive +-48 px search at quarter size, then +-3 px at full size, with a small preference for less movement),
+   exhaustive +-48 px search at quarter size, then +-3 px at full size, with a small preference for less movement; one
+   work group of 64 threads per block, the search area in shared memory),
    `smooth` (3x3 vector median, removing lone wrong vectors), and per added frame `interp` (both frames sampled along the
    vector at time t, blended; where they disagree, the nearer frame alone). The result is blitted into the acquired
    swapchain image.
@@ -45,7 +46,7 @@ their top left corner, to pick them out in screenshots).
 | 1 | The layer loads, sees instances, devices, swapchains and presents | done 2026-11-05 |
 | 2 | Extra presents per game frame, as copies: plumbing and pacing | done 2026-11-05: vkcube 90 game fps / 180 shown at x2, 60 / 180 at x3 (180 Hz) |
 | 3 | Real frames in between: motion estimation and interpolation (compute shaders) | first version 2026-11-05: added frames are real in-between frames (vkcube: a clean cube, slightly soft edges), no validation errors; holds 90/180 at 1080p, but the card is about 87 % busy: far too heavy |
-| 4 | Measured and made light: GPU timestamps per pass; a multi-level (pyramid) motion search instead of the exhaustive one, shared-memory tiles; latency (game frame to screen) and artifacts on test scenes; cost at 1080p and 1440p on the RTX 2080 Ti | next |
+| 4 | Measured and made light | in progress. GPU timestamps per step (`LABYRINTH_FRAMEGEN_LOG=1`). At 1080p the motion search took 8.0 ms of 8.3: one thread per block left the card idle. Now one work group of 64 threads per block (search area in shared memory, a reduction): **0.31 ms**; the whole generator **0.64 ms per game frame** (copy in 0.07, brightness 0.06, motion 0.31, smoothing 0.01, frames out 0.19), same motion quality. Left: a real game; 1440p and 4K; latency (+1 game frame is inherent) |
 | 5 | Second card | needs a second card to test |
 | 6 | Settings > Games: per-game switch and multiplier; a package in Labyrinth's repository; a 32-bit build for old Proton games | |
 

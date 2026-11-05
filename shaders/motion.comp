@@ -1,8 +1,11 @@
 #version 450
-// Where each 16x16 block of this frame came from in the previous one: an exhaustive search on the quarter-size brightness
-// (+-12 texels, so +-48 pixels), then a +-3 pixel refinement at full size. The vector v is the block's movement: the block at
-// x in this frame was at x - v in the previous one. z holds how well it matched (lower is better).
-layout(local_size_x = 8, local_size_y = 8) in;
+// Where each 16x16 block of this frame came from in the previous one. One work group of 64 threads per block:
+// 1. the block (4x4 at quarter size) and its search area in the previous frame's brightness (+-12 texels, so +-48 pixels) go
+//    into shared memory once; the threads try the 625 offsets between them and agree on the best (a reduction);
+// 2. a +-3 pixel refinement at full size: 49 threads, one offset each, over the block sampled every other pixel.
+// The vector v is the block's movement: the block at x in this frame was at x - v in the previous one. z holds how well it
+// matched (lower is better). A small preference for less movement keeps flat areas still.
+layout(local_size_x = 64) in;
 layout(binding = 0) uniform sampler2D lumaPrev;
 layout(binding = 1) uniform sampler2D lumaCur;
 layout(binding = 2) uniform sampler2D prevFrame;
@@ -10,49 +13,75 @@ layout(binding = 3) uniform sampler2D curFrame;
 layout(binding = 4, rgba16f) uniform writeonly image2D flow;
 
 const int R = 12;
+const int SIDE = 2 * R + 1;
+const int W = 4 + 2 * R;
+
+shared float area[W * W];
+shared float block[16];
+shared float curSamples[64];
+shared float bestSad[64];
+shared int bestIdx[64];
 
 float lum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
+void reduce(uint t) {
+    for (uint s = 32u; s > 0u; s >>= 1u) {
+        if (t < s && (bestSad[t + s] < bestSad[t] || (bestSad[t + s] == bestSad[t] && bestIdx[t + s] < bestIdx[t]))) {
+            bestSad[t] = bestSad[t + s];
+            bestIdx[t] = bestIdx[t + s];
+        }
+        barrier();
+    }
+}
+
 void main() {
-    ivec2 b = ivec2(gl_GlobalInvocationID.xy);
-    if (any(greaterThanEqual(b, imageSize(flow)))) return;
+    ivec2 b = ivec2(gl_WorkGroupID.xy);
+    uint t = gl_LocalInvocationIndex;
     ivec2 qs = textureSize(lumaCur, 0);
     ivec2 q0 = b * 4;
-    float block[16];
-    for (int y = 0; y < 4; y++)
-        for (int x = 0; x < 4; x++)
-            block[y * 4 + x] = texelFetch(lumaCur, clamp(q0 + ivec2(x, y), ivec2(0), qs - 1), 0).r;
+    for (uint i = t; i < uint(W * W); i += 64u)
+        area[i] = texelFetch(lumaPrev, clamp(q0 - R + ivec2(int(i) % W, int(i) / W), ivec2(0), qs - 1), 0).r;
+    if (t < 16u)
+        block[t] = texelFetch(lumaCur, clamp(q0 + ivec2(int(t) % 4, int(t) / 4), ivec2(0), qs - 1), 0).r;
+    barrier();
+
     float best = 1e9;
-    ivec2 bv = ivec2(0);
-    for (int dy = -R; dy <= R; dy++) {
-        for (int dx = -R; dx <= R; dx++) {
-            float sad = 0.0;
-            for (int y = 0; y < 4; y++)
-                for (int x = 0; x < 4; x++)
-                    sad += abs(block[y * 4 + x] - texelFetch(lumaPrev, clamp(q0 + ivec2(x - dx, y - dy), ivec2(0), qs - 1), 0).r);
-            // a small preference for less movement, so flat areas do not pick a random vector
-            sad += 0.004 * float(abs(dx) + abs(dy));
-            if (sad < best) { best = sad; bv = ivec2(dx, dy); }
-        }
+    int bi = 0;
+    for (int c = int(t); c < SIDE * SIDE; c += 64) {
+        int dx = c % SIDE - R, dy = c / SIDE - R;
+        float sad = 0.0;
+        for (int y = 0; y < 4; y++)
+            for (int x = 0; x < 4; x++)
+                sad += abs(block[y * 4 + x] - area[(y - dy + R) * W + (x - dx + R)]);
+        sad += 0.004 * float(abs(dx) + abs(dy));
+        if (sad < best) { best = sad; bi = c; }
     }
+    bestSad[t] = best;
+    bestIdx[t] = bi;
+    barrier();
+    reduce(t);
+    ivec2 base = ivec2(bestIdx[0] % SIDE - R, bestIdx[0] / SIDE - R) * 4;
+
     ivec2 fs = textureSize(curFrame, 0);
     ivec2 f0 = b * 16;
-    ivec2 base = bv * 4;
-    float best2 = 1e9;
-    ivec2 v = base;
-    for (int dy = -3; dy <= 3; dy++) {
-        for (int dx = -3; dx <= 3; dx++) {
-            ivec2 cand = base + ivec2(dx, dy);
-            float sad = 0.0;
-            for (int y = 0; y < 16; y += 2)
-                for (int x = 0; x < 16; x += 2) {
-                    ivec2 pc = clamp(f0 + ivec2(x, y), ivec2(0), fs - 1);
-                    sad += abs(lum(texelFetch(curFrame, pc, 0).rgb) - lum(texelFetch(prevFrame, clamp(pc - cand, ivec2(0), fs - 1), 0).rgb));
-                }
-            // the same preference for less movement as above (in quarter-size units), so a flat area stays still
-            sad += 0.004 * 16.0 * float(abs(cand.x) + abs(cand.y)) / 4.0;
-            if (sad < best2) { best2 = sad; v = cand; }
+    curSamples[t] = lum(texelFetch(curFrame, clamp(f0 + ivec2(int(t) % 8, int(t) / 8) * 2, ivec2(0), fs - 1), 0).rgb);
+    barrier();
+    float sad2 = 1e9;
+    if (t < 49u) {
+        ivec2 cand = base + ivec2(int(t) % 7 - 3, int(t) / 7 - 3);
+        sad2 = 0.0;
+        for (int i = 0; i < 64; i++) {
+            ivec2 pc = clamp(f0 + ivec2(i % 8, i / 8) * 2, ivec2(0), fs - 1);
+            sad2 += abs(curSamples[i] - lum(texelFetch(prevFrame, clamp(pc - cand, ivec2(0), fs - 1), 0).rgb));
         }
+        sad2 += 0.004 * 16.0 * float(abs(cand.x) + abs(cand.y)) / 4.0;
     }
-    imageStore(flow, b, vec4(vec2(v), best2 / 64.0, 0.0));
+    bestSad[t] = sad2;
+    bestIdx[t] = int(t);
+    barrier();
+    reduce(t);
+    if (t == 0u) {
+        int c = bestIdx[0];
+        imageStore(flow, b, vec4(vec2(base + ivec2(c % 7 - 3, c / 7 - 3)), bestSad[0] / 64.0, 0.0));
+    }
 }

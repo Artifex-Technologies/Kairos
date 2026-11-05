@@ -81,6 +81,8 @@ struct DeviceData {
     swap: ash::khr::swapchain::DeviceFn,
     set_loader_data: Option<SetDeviceLoaderData>,
     mem: vk::PhysicalDeviceMemoryProperties,
+    /// nanoseconds per timestamp tick
+    ts_period: f32,
     /// queue -> its family (from vkGetDeviceQueue / vkGetDeviceQueue2)
     families: HashMap<u64, u32>,
 }
@@ -94,7 +96,14 @@ struct Slot {
     /// one per generated frame, and the last for the game's own frame: signalled when it may be shown
     ready: Vec<vk::Semaphore>,
     used: bool,
+    /// GPU timestamps (only with LABYRINTH_FRAMEGEN_LOG=1): see TIMES
+    queries: vk::QueryPool,
+    timed: bool,
 }
+
+/// The timestamps written per game frame, and what lies between them.
+const STAMPS: u32 = 6;
+pub const TIMES: [&str; 5] = ["copy in", "brightness", "motion", "smoothing", "frames out"];
 
 struct SwapchainData {
     device: usize,
@@ -111,6 +120,9 @@ struct SwapchainData {
     since: Instant,
     game_frames: u32,
     shown_frames: u32,
+    /// GPU time per step (ms, summed) and how many frames were timed
+    gpu: [f64; 5],
+    gpu_frames: u32,
 }
 
 #[derive(Default)]
@@ -231,8 +243,10 @@ unsafe extern "system" fn create_device(pd: vk::PhysicalDevice, info: *const vk:
     let swap = ash::khr::swapchain::DeviceFn::load(load);
     let mut s = state();
     // a physical device's loader table is its instance's
-    let mem = s.instances.get(&key(pd)).map(|i| i.inst.get_physical_device_memory_properties(pd)).unwrap_or_default();
-    s.devices.insert(key(device), DeviceData { handle: device, next_gdpa, dev, swap, set_loader_data, mem, families: HashMap::new() });
+    let inst = s.instances.get(&key(pd)).map(|i| &i.inst);
+    let mem = inst.map(|i| i.get_physical_device_memory_properties(pd)).unwrap_or_default();
+    let ts_period = inst.map(|i| i.get_physical_device_properties(pd).limits.timestamp_period).unwrap_or(1.0);
+    s.devices.insert(key(device), DeviceData { handle: device, next_gdpa, dev, swap, set_loader_data, mem, ts_period, families: HashMap::new() });
     r
 }
 
@@ -316,6 +330,8 @@ unsafe extern "system" fn create_swapchain(device: vk::Device, info: *const vk::
         since: Instant::now(),
         game_frames: 0,
         shown_frames: 0,
+        gpu: [0.0; 5],
+        gpu_frames: 0,
     });
     vk::Result::SUCCESS
 }
@@ -325,6 +341,9 @@ unsafe fn free_swapchain_objects(d: &DeviceData, sc: &SwapchainData) {
         d.dev.destroy_fence(slot.fence, None);
         for s in slot.acquired.iter().chain(slot.ready.iter()) {
             d.dev.destroy_semaphore(*s, None);
+        }
+        if slot.queries != vk::QueryPool::null() {
+            d.dev.destroy_query_pool(slot.queries, None);
         }
     }
     if sc.pool != vk::CommandPool::null() {
@@ -385,7 +404,12 @@ unsafe fn prepare(d: &DeviceData, sc: &mut SwapchainData, family: u32, m: u32) -
         }
         ready.push(sem()?);
         let fence = d.dev.create_fence(&vk::FenceCreateInfo::default(), None)?;
-        sc.slots.push(Slot { fence, cmd, acquired, ready, used: false });
+        let queries = if logging() {
+            d.dev.create_query_pool(&vk::QueryPoolCreateInfo::default().query_type(vk::QueryType::TIMESTAMP).query_count(STAMPS), None)?
+        } else {
+            vk::QueryPool::null()
+        };
+        sc.slots.push(Slot { fence, cmd, acquired, ready, used: false, queries, timed: false });
     }
     Ok(())
 }
@@ -451,6 +475,13 @@ unsafe extern "system" fn queue_present(queue: vk::Queue, info: *const vk::Prese
     let secs = sc.since.elapsed().as_secs_f32();
     if secs >= 2.0 {
         log!("game {:.0} fps, shown {:.0} fps", sc.game_frames as f32 / secs, sc.shown_frames as f32 / secs);
+        if sc.gpu_frames > 0 {
+            let n = sc.gpu_frames as f64;
+            let parts: Vec<String> = TIMES.iter().zip(sc.gpu.iter()).map(|(name, t)| format!("{name} {:.3}", t / n)).collect();
+            log!("GPU ms per game frame: {} (total {:.3})", parts.join(", "), sc.gpu.iter().sum::<f64>() / n);
+            sc.gpu = [0.0; 5];
+            sc.gpu_frames = 0;
+        }
         sc.since = Instant::now();
         sc.game_frames = 0;
         sc.shown_frames = 0;
@@ -465,11 +496,22 @@ unsafe fn add_frames(d: &DeviceData, sc: &mut SwapchainData, queue: vk::Queue, f
     prepare(d, sc, family, m)?;
     let slot_i = sc.next;
     sc.next = (sc.next + 1) % SLOTS;
-    let slot = &mut sc.slots[slot_i];
-    if slot.used {
-        d.dev.wait_for_fences(&[slot.fence], true, u64::MAX)?;
-        d.dev.reset_fences(&[slot.fence])?;
+    let (used, fence, timed, queries) = { let s = &sc.slots[slot_i]; (s.used, s.fence, s.timed, s.queries) };
+    if used {
+        d.dev.wait_for_fences(&[fence], true, u64::MAX)?;
+        d.dev.reset_fences(&[fence])?;
+        if timed {
+            let mut t = [0u64; STAMPS as usize];
+            if d.dev.get_query_pool_results(queries, 0, &mut t, vk::QueryResultFlags::TYPE_64).is_ok() {
+                for (i, sum) in sc.gpu.iter_mut().enumerate() {
+                    *sum += t[i + 1].saturating_sub(t[i]) as f64 * d.ts_period as f64 / 1e6;
+                }
+                sc.gpu_frames += 1;
+            }
+        }
     }
+    let slot = &mut sc.slots[slot_i];
+    slot.timed = false;
     let mut targets = vec![];
     for k in 0..(m - 1) as usize {
         let mut j = 0u32;
@@ -489,6 +531,11 @@ unsafe fn add_frames(d: &DeviceData, sc: &mut SwapchainData, queue: vk::Queue, f
         Some(g) => {
             // the game's frame into the generator's own image (a blit: sRGB becomes linear half floats)
             let frame = g.frames[g.cur].image;
+            if slot.queries != vk::QueryPool::null() {
+                d.dev.cmd_reset_query_pool(cmd, slot.queries, 0, STAMPS);
+                d.dev.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, slot.queries, 0);
+                slot.timed = g.have_prev;
+            }
             let before = [
                 barrier(game_image, vk::ImageLayout::PRESENT_SRC_KHR, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::MEMORY_WRITE, vk::AccessFlags::TRANSFER_READ, layers),
                 barrier(frame, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE, 1),
@@ -497,7 +544,10 @@ unsafe fn add_frames(d: &DeviceData, sc: &mut SwapchainData, queue: vk::Queue, f
             d.dev.cmd_blit_image(cmd, game_image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, frame, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[blit_region(w, h)], vk::Filter::NEAREST);
             let ready = [barrier(frame, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::SHADER_READ, 1)];
             d.dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &[], &ready);
-            g.record_analysis(&d.dev, cmd);
+            if slot.queries != vk::QueryPool::null() {
+                d.dev.cmd_write_timestamp(cmd, vk::PipelineStageFlags::BOTTOM_OF_PIPE, slot.queries, 1);
+            }
+            g.record_analysis(&d.dev, cmd, slot.queries);
             for (k, &j) in targets.iter().enumerate() {
                 // the first game frame has nothing before it: its added frames are copies
                 let (src, src_layout) = if g.have_prev {
@@ -515,6 +565,9 @@ unsafe fn add_frames(d: &DeviceData, sc: &mut SwapchainData, queue: vk::Queue, f
             }
             let back = [barrier(game_image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::empty(), layers)];
             d.dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::BOTTOM_OF_PIPE, vk::DependencyFlags::empty(), &[], &[], &back);
+            if slot.queries != vk::QueryPool::null() {
+                d.dev.cmd_write_timestamp(cmd, vk::PipelineStageFlags::BOTTOM_OF_PIPE, slot.queries, 5);
+            }
             // this frame is the previous one for the next
             g.cur = 1 - g.cur;
             g.have_prev = true;
