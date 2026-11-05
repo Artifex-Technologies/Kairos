@@ -1,0 +1,30 @@
+#!/bin/sh
+# labyrinth-framegen: starts a game with frame generation as Settings > Games set it for that game.
+#
+# In a Steam game's launch options, once:   labyrinth-framegen %command%
+# Settings > Games then decides, per game, whether frame generation is on and its multiplier (no further Steam edits).
+#
+# The choices are in ~/.config/labyrinth-framegen/games.conf, one line per game: "<Steam app id> <off|2|3|4>", and
+# optionally "default <off|2|3|4>" for games not listed. Steam tells the game its id (SteamAppId, SteamGameId or
+# STEAM_COMPAT_APP_ID). Without a choice the game starts exactly as it would without this program.
+
+conf="${XDG_CONFIG_HOME:-$HOME/.config}/labyrinth-framegen/games.conf"
+id="${SteamAppId:-${SteamGameId:-${STEAM_COMPAT_APP_ID:-}}}"
+
+choice=""
+if [ -r "$conf" ]; then
+    [ -n "$id" ] && choice=$(awk -v id="$id" '$1 == id { v = $2 } END { print v }' "$conf")
+    [ -z "$choice" ] && choice=$(awk '$1 == "default" { v = $2 } END { print v }' "$conf")
+fi
+
+case "$choice" in
+    2|3|4)
+        export ENABLE_LABYRINTH_FRAMEGEN=1 LABYRINTH_FRAMEGEN_MULTIPLIER="$choice"
+        ;;
+esac
+
+if [ $# -eq 0 ]; then
+    echo "usage: labyrinth-framegen COMMAND [ARGS...]   (in Steam: labyrinth-framegen %command%)" >&2
+    exit 2
+fi
+exec "$@"

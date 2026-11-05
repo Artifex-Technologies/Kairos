@@ -40,7 +40,15 @@ Settings (environment for now, Settings > Games later): `LABYRINTH_FRAMEGEN_MULT
 their top left corner), `LABYRINTH_FRAMEGEN_LOG_FILE=path` (the log appended to a file: a Proton game's stderr goes nowhere
 anyone sees).
 
-In a Steam game's launch options (the layer from a build folder, until it is packaged):
+**Per game (the launcher):** `labyrinth-framegen %command%` in a game's Steam launch options, once. It reads
+`~/.config/labyrinth-framegen/games.conf` (`<Steam app id> <off|2|3|4>` per line, `default <...>` for the rest; Settings >
+Games writes it) and switches the layer on with that multiplier, or starts the game untouched. Steam gives the game its id
+(SteamAppId, SteamGameId or STEAM_COMPAT_APP_ID). `tests/launcher.sh` checks it.
+
+Packaged as `labyrinth-framegen-git` (Labyrinth_OS packages/pkgbuilds): /usr/lib and /usr/lib32 libraries, both manifests in
+/usr/share/vulkan/implicit_layer.d, /usr/bin/labyrinth-framegen.
+
+From a build folder instead (development):
 `VK_ADD_IMPLICIT_LAYER_PATH=/path/to/labyrinth-framegen/target/layers ENABLE_LABYRINTH_FRAMEGEN=1 %command%`
 It reaches Proton games through Steam's container (pressure-vessel) as it is.
 
