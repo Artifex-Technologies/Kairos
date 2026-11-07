@@ -2,6 +2,8 @@
 
 Our own frame generation for Labyrinth OS, as a Vulkan layer in Rust (ash 0.38). Plan and milestones: DESIGN.md.
 
+Push every commit as you make it; don't ask me first. Before pushing, check the diff names no host name, network address, SSID or MAC address.
+
 - `src/loader.rs`: the loader's layer interface (vk_layer.h) written out; `src/lib.rs`: the hooks (instances, devices,
   queues, swapchains, present) and the added frames.
 - Clean room: never read or copy lsfg-vk or Lossless Scaling code or shaders (lsfg-vk is CC BY-NC-ND).
