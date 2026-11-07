@@ -7,8 +7,8 @@ layout(binding = 0) uniform sampler2D prevFrame;
 layout(binding = 1) uniform sampler2D curFrame;
 layout(binding = 2) uniform sampler2D flow;
 layout(binding = 3, rgba16f) uniform writeonly image2D outFrame;
-// mode 1 (LABYRINTH_FRAMEGEN_DEBUG=flow): the motion as colour instead (grey = still; red/green = sideways/up-down);
-// mode 2 (LABYRINTH_FRAMEGEN_DEBUG=mark): a magenta square in the top left corner marks the frame as made here
+// mode 1 (KAIROS_DEBUG=flow): the motion as colour instead (grey = still; red/green = sideways/up-down);
+// mode 2 (KAIROS_DEBUG=mark): a magenta square in the top left corner marks the frame as made here
 layout(push_constant) uniform Push { float t; int mode; } pc;
 
 void main() {

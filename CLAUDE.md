@@ -1,4 +1,4 @@
-# labyrinth-framegen (working name)
+# Kairos (frame generation; "labyrinth-framegen" until 2026-11-07)
 
 Our own frame generation for Labyrinth OS, as a Vulkan layer in Rust (ash 0.38). Plan and milestones: DESIGN.md.
 

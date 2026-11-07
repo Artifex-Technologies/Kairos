@@ -1,4 +1,5 @@
-//! labyrinth-framegen: frame generation as a Vulkan layer (working name; see DESIGN.md).
+//! Kairos: frame generation as a Vulkan layer (see DESIGN.md). Named on 2026-11-07 for the god of the right moment: the frames
+//! it adds are the moments between the game's own (it was "labyrinth-framegen" until then).
 //!
 //! The layer sits between a game and the driver. It sees every frame the game presents (vkQueuePresentKHR) and, for each one,
 //! presents `multiplier - 1` frames of its own first, so the screen shows more frames than the game draws.
@@ -7,14 +8,25 @@
 //! FIFO presentation shows one image per refresh, so the game is held to refresh / multiplier and the screen gets the full
 //! refresh. If the generator cannot be made (memory, formats), the added frames are copies of the game's frame.
 //!
-//! Off unless asked for: the manifest loads it only with ENABLE_LABYRINTH_FRAMEGEN=1. Settings (environment, for now):
-//! LABYRINTH_FRAMEGEN_MULTIPLIER (2..4, default 2), LABYRINTH_FRAMEGEN_LOG=1 (rates every two seconds, on stderr),
-//! LABYRINTH_FRAMEGEN_MODE=copy (copies instead of generated frames, to compare).
+//! Off unless asked for: the manifest loads it only with ENABLE_KAIROS=1. Settings (environment, for now):
+//! KAIROS_MULTIPLIER (2..4, default 2), KAIROS_LOG=1 (rates every two seconds, on stderr),
+//! KAIROS_MODE=copy (copies instead of generated frames, to compare). Each is also read under its old name
+//! (LABYRINTH_FRAMEGEN_...), so launch options written before the rename keep working.
 
 #![allow(clippy::missing_safety_doc)]
 
 mod gen;
 mod loader;
+
+/// A setting from the environment: KAIROS_<name>, or its name from before the rename, LABYRINTH_FRAMEGEN_<name>.
+fn setting(name: &str) -> Result<String, std::env::VarError> {
+    std::env::var(format!("KAIROS_{name}")).or_else(|_| std::env::var(format!("LABYRINTH_FRAMEGEN_{name}")))
+}
+
+/// [`setting`], as an OS string (a path).
+fn setting_os(name: &str) -> Option<std::ffi::OsString> {
+    std::env::var_os(format!("KAIROS_{name}")).or_else(|| std::env::var_os(format!("LABYRINTH_FRAMEGEN_{name}")))
+}
 
 use ash::vk;
 use ash::vk::Handle;
@@ -31,7 +43,7 @@ const MAX_MULTIPLIER: u32 = 4;
 
 pub fn multiplier() -> u32 {
     static M: OnceLock<u32> = OnceLock::new();
-    *M.get_or_init(|| parse_multiplier(std::env::var("LABYRINTH_FRAMEGEN_MULTIPLIER").ok().as_deref()))
+    *M.get_or_init(|| parse_multiplier(setting("MULTIPLIER").ok().as_deref()))
 }
 
 /// The multiplier asked for: 2 to MAX_MULTIPLIER, 2 when missing or not understood.
@@ -41,14 +53,14 @@ pub fn parse_multiplier(v: Option<&str>) -> u32 {
 
 fn copy_mode() -> bool {
     static C: OnceLock<bool> = OnceLock::new();
-    *C.get_or_init(|| std::env::var("LABYRINTH_FRAMEGEN_MODE").is_ok_and(|v| v == "copy"))
+    *C.get_or_init(|| setting("MODE").is_ok_and(|v| v == "copy"))
 }
 
-/// LABYRINTH_FRAMEGEN_DEBUG: `flow` shows the estimated motion as colour in the added frames, `mark` puts a magenta square in
+/// KAIROS_DEBUG: `flow` shows the estimated motion as colour in the added frames, `mark` puts a magenta square in
 /// their top left corner (for telling them apart in screenshots). 0 = off, 1 = flow, 2 = mark.
 fn debug_mode() -> i32 {
     static D: OnceLock<i32> = OnceLock::new();
-    *D.get_or_init(|| match std::env::var("LABYRINTH_FRAMEGEN_DEBUG").as_deref() {
+    *D.get_or_init(|| match setting("DEBUG").as_deref() {
         Ok("flow") => 1,
         Ok("mark") => 2,
         _ => 0,
@@ -57,21 +69,21 @@ fn debug_mode() -> i32 {
 
 fn logging() -> bool {
     static L: OnceLock<bool> = OnceLock::new();
-    *L.get_or_init(|| std::env::var("LABYRINTH_FRAMEGEN_LOG").is_ok_and(|v| v == "1"))
+    *L.get_or_init(|| setting("LOG").is_ok_and(|v| v == "1"))
 }
 
 macro_rules! log {
     ($($t:tt)*) => { if logging() { log_line(&format!($($t)*)); } };
 }
 
-/// A log line on stderr, or appended to LABYRINTH_FRAMEGEN_LOG_FILE (a game under Proton has no stderr anyone sees).
+/// A log line on stderr, or appended to KAIROS_LOG_FILE (a game under Proton has no stderr anyone sees).
 fn log_line(msg: &str) {
     static FILE: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
     let file = FILE.get_or_init(|| {
-        let path = std::env::var_os("LABYRINTH_FRAMEGEN_LOG_FILE")?;
+        let path = setting_os("LOG_FILE")?;
         std::fs::OpenOptions::new().create(true).append(true).open(path).ok().map(Mutex::new)
     });
-    let line = format!("[labyrinth-framegen {}] {msg}\n", std::process::id());
+    let line = format!("[kairos {}] {msg}\n", std::process::id());
     match file {
         Some(f) => {
             use std::io::Write;
@@ -113,7 +125,7 @@ struct Slot {
     /// one per generated frame, and the last for the game's own frame: signalled when it may be shown
     ready: Vec<vk::Semaphore>,
     used: bool,
-    /// GPU timestamps (only with LABYRINTH_FRAMEGEN_LOG=1): see TIMES
+    /// GPU timestamps (only with KAIROS_LOG=1): see TIMES
     queries: vk::QueryPool,
     timed: bool,
 }
