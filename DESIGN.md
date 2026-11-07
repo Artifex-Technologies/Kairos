@@ -34,7 +34,8 @@ native Vulkan games and every Proton game (DXVK and VKD3D-Proton draw through Vu
 4. **Second card** (milestone 5): the game draws on card A; the layer copies each frame to card B (external memory, or host
    memory as the fallback) and generates and presents there, with the monitor on card B.
 
-Settings (environment for now, Settings > Games later): `LABYRINTH_FRAMEGEN_MULTIPLIER` (2 to 4), `LABYRINTH_FRAMEGEN_LOG=1`
+Settings: Settings > Games switches it per game (since milestone 6, through the launcher below). For testing, the environment:
+`LABYRINTH_FRAMEGEN_MULTIPLIER` (2 to 4), `LABYRINTH_FRAMEGEN_LOG=1`
 (rates every two seconds on stderr), `LABYRINTH_FRAMEGEN_MODE=copy` (copies instead, to compare),
 `LABYRINTH_FRAMEGEN_DEBUG=flow` (the added frames show the motion as colour: grey still) or `=mark` (a magenta square in
 their top left corner), `LABYRINTH_FRAMEGEN_LOG_FILE=path` (the log appended to a file: a Proton game's stderr goes nowhere
@@ -62,6 +63,8 @@ It reaches Proton games through Steam's container (pressure-vessel) as it is.
 | 4 | Measured and made light | in progress. GPU timestamps per step (`LABYRINTH_FRAMEGEN_LOG=1`). At 1080p the motion search took 8.0 ms of 8.3: one thread per block left the card idle. Now one work group of 64 threads per block (search area in shared memory, a reduction): **0.31 ms**; the whole generator **0.64 ms per game frame** (copy in 0.07, brightness 0.06, motion 0.31, smoothing 0.01, frames out 0.19), same motion quality. **First real game (2026-11-05): Stray** (Unreal Engine 4, DX11 through Proton Experimental, inside Steam's container): the layer loads into the game process, generates at 1080p for **about 0.6 ms** a game frame, 60 game fps (its menu cap) to 120 shown. Left: whether the added frames look right on a real screen (screenshots cannot tell: grim captures whichever image the compositor holds, 0 of 12 or 4 of 4 depending on timing, so this needs eyes), 1440p and 4K, latency (+1 game frame is inherent) |
 | 5 | Second card | needs a second card to test |
 | 6 | Settings > Games: per-game switch and multiplier; a package in Labyrinth's repository; a 32-bit build for old Proton games | **done 2026-11-05**: 32-bit build (Dead Space 2, 32-bit DirectX 9, at 3440x1440: about 1.1 ms a game frame); the launcher `labyrinth-framegen %command%` and `games.conf`; Settings > Games lists every installed Steam game with Off / 2x / 3x / 4x; package `labyrinth-framegen-git` (Labyrinth_OS recipe), published to Labyrinth's repository and offered in Agora as Frame generation (preview) |
+
+**On a real screen (2026-11-06):** the owner played Dead Space 2 and Fallout 4 with the layer on; both ran smoothly.
 
 ## Testing
 
