@@ -61,7 +61,13 @@ fn memory_type(props: &vk::PhysicalDeviceMemoryProperties, bits: u32, want: vk::
     (0..props.memory_type_count).find(|&i| bits & (1 << i) != 0 && props.memory_types[i as usize].property_flags.contains(want))
 }
 
-unsafe fn image(dev: &ash::Device, props: &vk::PhysicalDeviceMemoryProperties, e: vk::Extent2D, format: vk::Format, usage: vk::ImageUsageFlags) -> Result<Img, vk::Result> {
+unsafe fn image(
+    dev: &ash::Device,
+    props: &vk::PhysicalDeviceMemoryProperties,
+    e: vk::Extent2D,
+    format: vk::Format,
+    usage: vk::ImageUsageFlags,
+) -> Result<Img, vk::Result> {
     let info = vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
         .format(format)
@@ -82,7 +88,11 @@ unsafe fn image(dev: &ash::Device, props: &vk::PhysicalDeviceMemoryProperties, e
     let memory = dev.allocate_memory(&vk::MemoryAllocateInfo::default().allocation_size(req.size).memory_type_index(ty), None)?;
     dev.bind_image_memory(image, memory, 0)?;
     let view = dev.create_image_view(
-        &vk::ImageViewCreateInfo::default().image(image).view_type(vk::ImageViewType::TYPE_2D).format(format).subresource_range(crate::color_range(1)),
+        &vk::ImageViewCreateInfo::default()
+            .image(image)
+            .view_type(vk::ImageViewType::TYPE_2D)
+            .format(format)
+            .subresource_range(crate::color_range(1)),
         None,
     )?;
     Ok(Img { image, memory, view })
@@ -99,7 +109,13 @@ unsafe fn pass(dev: &ash::Device, spv: &[u8], sampled: u32, storage: u32, push: 
     let mut bindings = vec![];
     for b in 0..sampled + storage {
         let ty = if b < sampled { vk::DescriptorType::COMBINED_IMAGE_SAMPLER } else { vk::DescriptorType::STORAGE_IMAGE };
-        bindings.push(vk::DescriptorSetLayoutBinding::default().binding(b).descriptor_type(ty).descriptor_count(1).stage_flags(vk::ShaderStageFlags::COMPUTE));
+        bindings.push(
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(b)
+                .descriptor_type(ty)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+        );
     }
     let set_layout = dev.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings), None)?;
     let ranges = [vk::PushConstantRange { stage_flags: vk::ShaderStageFlags::COMPUTE, offset: 0, size: push }];
@@ -112,7 +128,11 @@ unsafe fn pass(dev: &ash::Device, spv: &[u8], sampled: u32, storage: u32, push: 
     let code = ash::util::read_spv(&mut Cursor::new(spv)).map_err(|_| vk::Result::ERROR_INVALID_SHADER_NV)?;
     let module = dev.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&code), None)?;
     let stage = vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::COMPUTE).module(module).name(c"main");
-    let made = dev.create_compute_pipelines(vk::PipelineCache::null(), &[vk::ComputePipelineCreateInfo::default().stage(stage).layout(layout)], None);
+    let made = dev.create_compute_pipelines(
+        vk::PipelineCache::null(),
+        &[vk::ComputePipelineCreateInfo::default().stage(stage).layout(layout)],
+        None,
+    );
     dev.destroy_shader_module(module, None);
     let pipeline = made.map_err(|(_, e)| e)?[0];
     Ok(Pass { set_layout, layout, pipeline })
@@ -159,11 +179,14 @@ impl Gen {
         let layouts = [passes[0].set_layout, passes[1].set_layout, passes[2].set_layout, passes[3].set_layout];
         let mut sets = [[vk::DescriptorSet::null(); 4]; 2];
         for (k, s) in sets.iter_mut().enumerate() {
-            let made = dev.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(pool).set_layouts(&layouts))?;
+            let made =
+                dev.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(pool).set_layouts(&layouts))?;
             s.copy_from_slice(&made);
             let (cur, prev) = (k, 1 - k);
             let sampled = |v: vk::ImageView| [vk::DescriptorImageInfo { sampler, image_view: v, image_layout: vk::ImageLayout::GENERAL }];
-            let storage = |v: vk::ImageView| [vk::DescriptorImageInfo { sampler: vk::Sampler::null(), image_view: v, image_layout: vk::ImageLayout::GENERAL }];
+            let storage = |v: vk::ImageView| {
+                [vk::DescriptorImageInfo { sampler: vk::Sampler::null(), image_view: v, image_layout: vk::ImageLayout::GENERAL }]
+            };
             // luma: frame k -> luma k
             let l0 = sampled(frames[cur].view);
             let l1 = storage(luma[cur].view);
@@ -213,7 +236,12 @@ impl Gen {
         }
     }
 
-    fn compute_barrier(image: vk::Image, from: vk::ImageLayout, src: vk::AccessFlags, dst: vk::AccessFlags) -> vk::ImageMemoryBarrier<'static> {
+    fn compute_barrier(
+        image: vk::Image,
+        from: vk::ImageLayout,
+        src: vk::AccessFlags,
+        dst: vk::AccessFlags,
+    ) -> vk::ImageMemoryBarrier<'static> {
         crate::barrier(image, from, vk::ImageLayout::GENERAL, src, dst, 1)
     }
 
@@ -228,19 +256,53 @@ impl Gen {
         };
         let k = self.cur;
         let q = quarter(self.extent);
-        let pre = [Self::compute_barrier(self.luma[k].image, vk::ImageLayout::UNDEFINED, vk::AccessFlags::empty(), vk::AccessFlags::SHADER_WRITE)];
-        dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &[], &pre);
+        let pre = [Self::compute_barrier(
+            self.luma[k].image,
+            vk::ImageLayout::UNDEFINED,
+            vk::AccessFlags::empty(),
+            vk::AccessFlags::SHADER_WRITE,
+        )];
+        dev.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &pre,
+        );
         self.dispatch(dev, cmd, 0, groups(q));
         stamp(2);
-        let mut b = vec![Self::compute_barrier(self.luma[k].image, vk::ImageLayout::GENERAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::SHADER_READ)];
+        let mut b = vec![Self::compute_barrier(
+            self.luma[k].image,
+            vk::ImageLayout::GENERAL,
+            vk::AccessFlags::SHADER_WRITE,
+            vk::AccessFlags::SHADER_READ,
+        )];
         if !self.have_prev {
-            dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &[], &b);
+            dev.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &b,
+            );
             stamp(3);
             stamp(4);
             return;
         }
         b.push(Self::compute_barrier(self.flow.image, vk::ImageLayout::UNDEFINED, vk::AccessFlags::empty(), vk::AccessFlags::SHADER_WRITE));
-        dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &[], &b);
+        dev.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &b,
+        );
         // one work group of 64 threads per block
         let f = flow_size(self.extent);
         self.dispatch(dev, cmd, 1, (f.width, f.height));
@@ -249,25 +311,71 @@ impl Gen {
             Self::compute_barrier(self.flow.image, vk::ImageLayout::GENERAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::SHADER_READ),
             Self::compute_barrier(self.flow2.image, vk::ImageLayout::UNDEFINED, vk::AccessFlags::empty(), vk::AccessFlags::SHADER_WRITE),
         ];
-        dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &[], &mid);
+        dev.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &mid,
+        );
         self.dispatch(dev, cmd, 3, groups(flow_size(self.extent)));
         stamp(4);
-        let after = [Self::compute_barrier(self.flow2.image, vk::ImageLayout::GENERAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::SHADER_READ)];
-        dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &[], &after);
+        let after = [Self::compute_barrier(
+            self.flow2.image,
+            vk::ImageLayout::GENERAL,
+            vk::AccessFlags::SHADER_WRITE,
+            vk::AccessFlags::SHADER_READ,
+        )];
+        dev.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &after,
+        );
     }
 
     /// Records one frame at time `t` into `out` (left in GENERAL, ready to be read by a transfer).
     pub unsafe fn record_frame(&self, dev: &ash::Device, cmd: vk::CommandBuffer, t: f32, first: bool) {
-        let (from, src) = if first { (vk::ImageLayout::UNDEFINED, vk::AccessFlags::empty()) } else { (vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ) };
+        let (from, src) = if first {
+            (vk::ImageLayout::UNDEFINED, vk::AccessFlags::empty())
+        } else {
+            (vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ)
+        };
         let pre = [Self::compute_barrier(self.out.image, from, src, vk::AccessFlags::SHADER_WRITE)];
-        dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER | vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &[], &pre);
+        dev.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::TRANSFER | vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &pre,
+        );
         let mut push = [0u8; 8];
         push[..4].copy_from_slice(&t.to_ne_bytes());
         push[4..].copy_from_slice(&crate::debug_mode().to_ne_bytes());
         dev.cmd_push_constants(cmd, self.passes[2].layout, vk::ShaderStageFlags::COMPUTE, 0, &push);
         self.dispatch(dev, cmd, 2, groups(self.extent));
-        let after = [Self::compute_barrier(self.out.image, vk::ImageLayout::GENERAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::TRANSFER_READ)];
-        dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[], &[], &after);
+        let after = [Self::compute_barrier(
+            self.out.image,
+            vk::ImageLayout::GENERAL,
+            vk::AccessFlags::SHADER_WRITE,
+            vk::AccessFlags::TRANSFER_READ,
+        )];
+        dev.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &after,
+        );
     }
 
     unsafe fn dispatch(&self, dev: &ash::Device, cmd: vk::CommandBuffer, which: usize, (x, y): (u32, u32)) {
@@ -285,7 +393,11 @@ mod tests {
     #[test]
     fn sizes_cover_the_frame() {
         let e = vk::Extent2D { width: 1920, height: 1080 };
-        assert_eq!(flow_size(e), vk::Extent2D { width: 120, height: 68 }, "1080 is not a multiple of 16: the last row of blocks is partial");
+        assert_eq!(
+            flow_size(e),
+            vk::Extent2D { width: 120, height: 68 },
+            "1080 is not a multiple of 16: the last row of blocks is partial"
+        );
         assert_eq!(quarter(e), vk::Extent2D { width: 480, height: 270 });
         assert_eq!(groups(vk::Extent2D { width: 500, height: 500 }), (63, 63));
     }

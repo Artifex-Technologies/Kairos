@@ -64,5 +64,6 @@ pub unsafe fn find_device_link(info: *const vk::DeviceCreateInfo<'_>) -> Option<
 }
 
 pub unsafe fn find_loader_data_callback(info: *const vk::DeviceCreateInfo<'_>) -> Option<SetDeviceLoaderData> {
-    find((*info).p_next, vk::StructureType::LOADER_DEVICE_CREATE_INFO, LOADER_DATA_CALLBACK).map(|i| std::mem::transmute::<*mut c_void, SetDeviceLoaderData>((*i).u))
+    find((*info).p_next, vk::StructureType::LOADER_DEVICE_CREATE_INFO, LOADER_DATA_CALLBACK)
+        .map(|i| std::mem::transmute::<*mut c_void, SetDeviceLoaderData>((*i).u))
 }
