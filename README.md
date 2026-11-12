@@ -19,3 +19,7 @@ VK_ADD_IMPLICIT_LAYER_PATH=$PWD/target/layers ENABLE_KAIROS=1 KAIROS_LOG=1 vkcub
 ```
 
 Licence: MPL-2.0 (`LICENSE`).
+
+## Version
+
+`VERSION` is Kairos's own version (1.0.0 since 2026-11-11, its first numbered release); its package is `kairos-git` `VERSION-<build number>`. How the numbers work and how to make a release: [Labyrinth_OS docs/VERSIONING.md](https://github.com/Artifex-Technologies/Labyrinth_OS/blob/main/docs/VERSIONING.md).
