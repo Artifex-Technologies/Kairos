@@ -109,6 +109,14 @@ My answers (2026-11-18):
 
 Vulkan everywhere: every role above is Vulkan (or wgpu) compute, so it runs on Intel, AMD and NVIDIA alike.
 
+Frame generation on an integrated chip: only where it keeps up. My desktop's UHD 630 has about 1/30 of the 2080 Ti's
+compute (the generator's 0.6 ms a frame at 1080p would be about 20 ms there, about 45 ms at 3440x1440), and every frame
+would cross to it and back because the monitor is on the NVIDIA card: there it does the other roles, not frame
+generation. It fits laptops whose screen is wired to the integrated chip (each frame passes through it anyway) and newer
+integrated chips (Radeon 780M/890M, Intel Arc in recent laptops: several times a UHD 630). So Kairos times a chip itself
+(a short run of the generator at the game's resolution) and offers "generate frames on this chip" only when it fits the
+frame budget; otherwise the choice is not shown.
+
 ## Testing
 
 - `cargo test` (no GPU).
