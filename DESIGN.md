@@ -68,6 +68,42 @@ It reaches Proton games through Steam's container (pressure-vessel) as it is.
 
 **On a real screen (2026-11-06):** the owner played Dead Space 2 and Fallout 4 with the layer on; both ran smoothly.
 
+## Several graphics chips: roles beyond frame generation (planned, 2026-11-18)
+
+My direction: frame generation stays Kairos's main job, and it keeps working on its own for anyone who uses neither
+Sarina nor Heimdall. On top of it, an **optional** part lets a computer with more than one graphics chip (a laptop with an
+integrated and a dedicated one; later my desktop with two cards) give each chip a role:
+
+- **Render** (the game's own card) and **frame generation** (the same card, or the second one: milestone 5).
+- **Compute for Sarina**: her local model and speech run on the chip the game is not using (the integrated one on a
+  laptop, the second card on the desktop), so a game keeps its card and Sarina stays responsive.
+- **Compute for Heimdall**, where a job gains from a graphics chip.
+- **Watching in real time** (meaning still to be settled with me; see the open questions).
+
+Shape (to design properly before building):
+- A small broker beside the layer (`kairos` already exists as the launcher): it lists the chips (Vulkan physical devices
+  and DRM render nodes: vendor, integrated or dedicated, memory), knows which one a running game uses (the layer reports
+  it), and answers "which chip may I use now?" to Sarina's and Heimdall's services, following game time
+  (`yggdrasil-gametime`): during a game the game's card is reserved.
+- It hands out a choice, never a capability: each program still opens the chip itself (llama.cpp/Ollama device selection,
+  ONNX Runtime's device id, Vulkan compute). The broker has no rights over other programs; a program that ignores it is no
+  worse off than today.
+- Nothing in the layer depends on the broker: with no broker, or no second chip, Kairos is exactly today's Kairos.
+- Vulkan compute or wgpu first (runs on Intel, AMD and NVIDIA, and a Raspberry Pi has no use for it); CUDA only for
+  NVIDIA-only extras (Sarina's references, `rust-cuda`).
+
+Testing: the laptop (X1 Yoga Gen 8) has only an integrated Intel chip, so the "two chips" case needs other hardware. The
+desktop's i9-9900K has an integrated Intel UHD 630 that is switched off in the BIOS today; switching it on (with the
+monitor still on the NVIDIA card) would give a two-chip test machine now. Or wait for the second card.
+
+Open questions (mine to answer):
+1. "Real-time interception and observation": what should be watched, and by whom? Kairos sees every frame a game
+   presents, so it could, for example, let Sarina look at the game on request; or the integrated chip could carry
+   Heimdall's live network analysis on LykanOS. Each needs its own privacy rules (visible indicator, per-app consent, never
+   in the background on Labyrinth OS).
+2. Switch the desktop's integrated chip on in the BIOS for testing, or wait for the second card?
+3. On LykanOS first (as planned), and Labyrinth OS after, or both at once?
+
 ## Testing
 
 - `cargo test` (no GPU).
