@@ -92,6 +92,10 @@ Shape (to design properly before building):
 - Vulkan compute or wgpu first (runs on Intel, AMD and NVIDIA, and a Raspberry Pi has no use for it); CUDA only for
   NVIDIA-only extras (Sarina's references, `rust-cuda`).
 
+Test machines offered (2026-11-18): two friends' gaming laptops (one new, one old) besides my desktop and the RTX 2070 +
+Arc B580 build; tested from a Labyrinth OS live USB so their own systems stay untouched. Per laptop, note: the chips, and
+whether the screen is wired to the integrated chip, the dedicated one, or switchable (a MUX switch).
+
 Testing: the laptop (X1 Yoga Gen 8) has only an integrated Intel chip, so the "two chips" case needs other hardware. The
 desktop's i9-9900K has an integrated Intel UHD 630 that is switched off in the BIOS today; switching it on (with the
 monitor still on the NVIDIA card) would give a two-chip test machine now. Or wait for the second card.
