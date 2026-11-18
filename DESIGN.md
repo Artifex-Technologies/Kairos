@@ -96,13 +96,18 @@ Testing: the laptop (X1 Yoga Gen 8) has only an integrated Intel chip, so the "t
 desktop's i9-9900K has an integrated Intel UHD 630 that is switched off in the BIOS today; switching it on (with the
 monitor still on the NVIDIA card) would give a two-chip test machine now. Or wait for the second card.
 
-Open questions (mine to answer):
-1. "Real-time interception and observation": what should be watched, and by whom? Kairos sees every frame a game
-   presents, so it could, for example, let Sarina look at the game on request; or the integrated chip could carry
-   Heimdall's live network analysis on LykanOS. Each needs its own privacy rules (visible indicator, per-app consent, never
-   in the background on Labyrinth OS).
-2. Switch the desktop's integrated chip on in the BIOS for testing, or wait for the second card?
-3. On LykanOS first (as planned), and Labyrinth OS after, or both at once?
+My answers (2026-11-18):
+1. **Both**, each its own opt-in feature: Sarina may look at a game's frames when I ask her (Kairos hands her a scaled-down
+   copy of one frame; a visible indicator while she looks; never on her own, never in the background), and Heimdall's live
+   network analysis may use the spare chip on LykanOS. Sarina's current model has no vision, so the first needs a vision
+   model (a download: my call when we get there).
+2. **The desktop's integrated Intel chip goes on** (BIOS: Settings > Advanced > Integrated Graphics Configuration:
+   Initiate Graphic Adapter = PEG, IGD Multi-Monitor = Enabled; monitor stays on the NVIDIA card). NVIDIA plus Intel is
+   also exactly my friend's mix (an RTX 2070 and an Intel Arc B580), so it tests the cross-vendor path: rendering on one
+   vendor's card and generating or computing on the other's (Vulkan external memory through dma-buf, or host memory).
+3. **Labyrinth OS first** (my desktop is the test machine), then LykanOS, once I have a laptop with both kinds of chip.
+
+Vulkan everywhere: every role above is Vulkan (or wgpu) compute, so it runs on Intel, AMD and NVIDIA alike.
 
 ## Testing
 
