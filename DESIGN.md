@@ -62,64 +62,19 @@ It reaches Proton games through Steam's container (pressure-vessel) as it is.
 | 1 | The layer loads, sees instances, devices, swapchains and presents | done 2026-11-05 |
 | 2 | Extra presents per game frame, as copies: plumbing and pacing | done 2026-11-05: vkcube 90 game fps / 180 shown at x2, 60 / 180 at x3 (180 Hz) |
 | 3 | Real frames in between: motion estimation and interpolation (compute shaders) | first version 2026-11-05: added frames are real in-between frames (vkcube: a clean cube, slightly soft edges), no validation errors; holds 90/180 at 1080p, but the card is about 87 % busy: far too heavy |
-| 4 | Measured and made light | in progress. GPU timestamps per step (`KAIROS_LOG=1`). At 1080p the motion search took 8.0 ms of 8.3: one thread per block left the card idle. Now one work group of 64 threads per block (search area in shared memory, a reduction): **0.31 ms**; the whole generator **0.64 ms per game frame** (copy in 0.07, brightness 0.06, motion 0.31, smoothing 0.01, frames out 0.19), same motion quality. **First real game (2026-11-05): Stray** (Unreal Engine 4, DX11 through Proton Experimental, inside Steam's container): the layer loads into the game process, generates at 1080p for **about 0.6 ms** a game frame, 60 game fps (its menu cap) to 120 shown. Left: whether the added frames look right on a real screen (screenshots cannot tell: grim captures whichever image the compositor holds, 0 of 12 or 4 of 4 depending on timing, so this needs eyes), 1440p and 4K, latency (+1 game frame is inherent) |
-| 5 | Second card | needs a second card to test |
+| 4 | Measured and made light | measured 2026-11-05. GPU timestamps per step (`KAIROS_LOG=1`). At 1080p the motion search took 8.0 ms of 8.3: one thread per block left the card idle. Now one work group of 64 threads per block (search area in shared memory, a reduction): **0.31 ms**; the whole generator **0.64 ms per game frame** (copy in 0.07, brightness 0.06, motion 0.31, smoothing 0.01, frames out 0.19), same motion quality. **First real game (2026-11-05): Stray** (Unreal Engine 4, DX11 through Proton Experimental, inside Steam's container): the layer loads into the game process, generates at 1080p for **about 0.6 ms** a game frame, 60 game fps (its menu cap) to 120 shown. Screenshots cannot judge the added frames (grim captures whichever image the compositor holds, 0 of 12 or 4 of 4 depending on timing): that took eyes, below |
+| 5 | Second card | not built (see Known limitations) |
 | 6 | Settings > Games: per-game switch and multiplier; a package in Labyrinth's repository; a 32-bit build for old Proton games | **done 2026-11-05**: 32-bit build (Dead Space 2, 32-bit DirectX 9, at 3440x1440: about 1.1 ms a game frame); the launcher `kairos %command%` and `games.conf`; Settings > Games lists every installed Steam game with Off / 2x / 3x / 4x; package `labyrinth-framegen-git` (Labyrinth_OS recipe), published to Labyrinth's repository and offered in Agora as Frame generation (preview) |
 
 **On a real screen (2026-11-06):** the owner played Dead Space 2 and Fallout 4 with the layer on; both ran smoothly.
 
-## Several graphics chips: roles beyond frame generation (planned, 2026-11-18)
+## Known limitations
 
-My direction: frame generation stays Kairos's main job, and it keeps working on its own for anyone who uses neither
-Sarina nor Heimdall. On top of it, an **optional** part lets a computer with more than one graphics chip (a laptop with an
-integrated and a dedicated one; later my desktop with two cards) give each chip a role:
-
-- **Render** (the game's own card) and **frame generation** (the same card, or the second one: milestone 5).
-- **Compute for Sarina**: her local model and speech run on the chip the game is not using (the integrated one on a
-  laptop, the second card on the desktop), so a game keeps its card and Sarina stays responsive.
-- **Compute for Heimdall**, where a job gains from a graphics chip.
-- **Watching in real time** (meaning still to be settled with me; see the open questions).
-
-Shape (to design properly before building):
-- A small broker beside the layer (`kairos` already exists as the launcher): it lists the chips (Vulkan physical devices
-  and DRM render nodes: vendor, integrated or dedicated, memory), knows which one a running game uses (the layer reports
-  it), and answers "which chip may I use now?" to Sarina's and Heimdall's services, following game time
-  (`yggdrasil-gametime`): during a game the game's card is reserved.
-- It hands out a choice, never a capability: each program still opens the chip itself (llama.cpp/Ollama device selection,
-  ONNX Runtime's device id, Vulkan compute). The broker has no rights over other programs; a program that ignores it is no
-  worse off than today.
-- Nothing in the layer depends on the broker: with no broker, or no second chip, Kairos is exactly today's Kairos.
-- Vulkan compute or wgpu first (runs on Intel, AMD and NVIDIA, and a Raspberry Pi has no use for it); CUDA only for
-  NVIDIA-only extras (Sarina's references, `rust-cuda`).
-
-Test machines offered (2026-11-18): two friends' gaming laptops (one new, one old) besides my desktop and the RTX 2070 +
-Arc B580 build; tested from a Labyrinth OS live USB so their own systems stay untouched. Per laptop, note: the chips, and
-whether the screen is wired to the integrated chip, the dedicated one, or switchable (a MUX switch).
-
-Testing: the laptop (X1 Yoga Gen 8) has only an integrated Intel chip, so the "two chips" case needs other hardware. The
-desktop's i9-9900K has an integrated Intel UHD 630 that is switched off in the BIOS today; switching it on (with the
-monitor still on the NVIDIA card) would give a two-chip test machine now. Or wait for the second card.
-
-My answers (2026-11-18):
-1. **Both**, each its own opt-in feature: Sarina may look at a game's frames when I ask her (Kairos hands her a scaled-down
-   copy of one frame; a visible indicator while she looks; never on her own, never in the background), and Heimdall's live
-   network analysis may use the spare chip on LykanOS. Sarina's current model has no vision, so the first needs a vision
-   model (a download: my call when we get there).
-2. **The desktop's integrated Intel chip goes on** (BIOS: Settings > Advanced > Integrated Graphics Configuration:
-   Initiate Graphic Adapter = PEG, IGD Multi-Monitor = Enabled; monitor stays on the NVIDIA card). NVIDIA plus Intel is
-   also exactly my friend's mix (an RTX 2070 and an Intel Arc B580), so it tests the cross-vendor path: rendering on one
-   vendor's card and generating or computing on the other's (Vulkan external memory through dma-buf, or host memory).
-3. **Labyrinth OS first** (my desktop is the test machine), then LykanOS, once I have a laptop with both kinds of chip.
-
-Vulkan everywhere: every role above is Vulkan (or wgpu) compute, so it runs on Intel, AMD and NVIDIA alike.
-
-Frame generation on an integrated chip: only where it keeps up. My desktop's UHD 630 has about 1/30 of the 2080 Ti's
-compute (the generator's 0.6 ms a frame at 1080p would be about 20 ms there, about 45 ms at 3440x1440), and every frame
-would cross to it and back because the monitor is on the NVIDIA card: there it does the other roles, not frame
-generation. It fits laptops whose screen is wired to the integrated chip (each frame passes through it anyway) and newer
-integrated chips (Radeon 780M/890M, Intel Arc in recent laptops: several times a UHD 630). So Kairos times a chip itself
-(a short run of the generator at the game's resolution) and offers "generate frames on this chip" only when it fits the
-frame budget; otherwise the choice is not shown.
+- **Second card** (milestone 5) is not built: the layer generates and presents on the card the game draws on.
+- **Measured at 1080p and 3440x1440 only**; 1440p and 4K timings and the added latency (one game frame is inherent) are not
+  measured.
+- **One chip's job only:** Kairos does frame generation; giving a second graphics chip other roles (compute for Sarina or
+  Heimdall) is not built.
 
 ## Testing
 

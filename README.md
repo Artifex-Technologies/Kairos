@@ -9,8 +9,8 @@ game's own (it was "labyrinth-framegen" until then).
 moments: vkcube 90 game frames a second and 180 on the screen; Stray (Unreal Engine 4 through Proton) 60 to 120; Dead Space 2
 (32-bit, at 3440x1440). It costs about 0.6 ms of the graphics card per game frame at 1080p. On Labyrinth OS it is in Agora
 (Frame generation, preview): put `kairos %command%` in a game's Steam launch options once, then choose Off / 2x / 3x /
-4x for that game in Settings > Games. How it looks on a real screen still needs eyes, and the second graphics card is still to
-come. See [DESIGN.md](DESIGN.md).
+4x for that game in Settings > Games. On a real screen (2026-11-06) Dead Space 2 and Fallout 4 ran smoothly with it. A second
+graphics card is not supported. See [DESIGN.md](DESIGN.md).
 
 ```sh
 cargo build --release
